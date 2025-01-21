@@ -1,0 +1,19 @@
+[package]
+name = "bitsgap_tech_task"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+tonic = "*"
+prost = "0.13"
+tokio = { version = "1.0", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.8", features = [ "runtime-tokio", "sqlite" ] }
+reqwest = "0.12.12"
+serde = "1.0.217"
+serde_json = "1.0.137"
+strum = "0.26"
+strum_macros = "0.26"
+
+[build-dependencies]
+tonic-build = "*"
