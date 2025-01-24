@@ -1,85 +1,62 @@
-pub mod common;
 pub mod client;
+pub mod common;
+pub mod database;
 
+use crate::client::ws::PoloniexWs;
+use client::{
+    models::{PoloniexKLineIntervals, PoloniexRequest},
+    rest::PoloniexRest,
+};
+use database::Database;
 use std::sync::Arc;
-
-use tonic::{transport::Server, Request, Response, Status};
 use tokio::sync::Mutex;
 
-use bitsgrap_tech_task::proxy_server::{Proxy, ProxyServer};
-use bitsgrap_tech_task::{Empty, RecentTrade, Kline, Vbs};
-use sqlx::sqlite::SqlitePool;
-
-pub mod bitsgrap_tech_task {
-    tonic::include_proto!("bitsgrap_tech_task");
-}
-
 pub struct State {
-    sqlite_pool: SqlitePool,
-}
-
-#[derive(Debug, Default)]
-pub struct PoloniexProxy {}
-
-#[tonic::async_trait]
-impl Proxy for PoloniexProxy {
-    async fn get_rt(
-        &self,
-        _request: Request<Empty>,
-    ) -> Result<Response<RecentTrade>, Status> {
-        let reply = RecentTrade {
-            tid: String::from("sample"),
-            pair: String::from("sample"),
-            price: String::from("sample"),
-            amount: String::from("sample"),
-            side: String::from("sample"),
-            timestamp: 3000,
-        };
-
-        Ok(Response::new(reply))
-    }
-
-    async fn get_kl(
-        &self,
-        _request: Request<Empty>, 
-    ) -> Result<Response<Kline>, Status> { 
-        let vbs = Vbs {
-            buy_base: 100.0,
-            sell_base: 100.0,
-            buy_quote: 100.0,
-            sell_quote: 100.0,
-        };
-        let reply = Kline {
-            pair: String::from("sample"),
-            time_frame: String::from("sample"),
-            o: 100.0,
-            h: 100.0,
-            l: 100.0,
-            c: 100.0,
-            utc_begin: 3000,
-            utc_end: 3000,
-            volume_bs: Some(vbs),
-        };
-
-        Ok(Response::new(reply)) 
-    }
+    db: Database,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = "127.0.0.1:4000".parse()?;
+async fn main() {
+    // simple logging
+    let _ = tracing_subscriber::fmt::init();
+    tracing::info!("Running the system");
+
+    let kline_start_time = 1733011200;
+    let kline_end_time = 1735689599;
 
     // The easiest db to setup
     let state = State {
-        sqlite_pool: SqlitePool::connect("sqlite::memory:").await?
+        db: Database::new(),
     };
     let shared_state = Arc::new(Mutex::new(state));
 
-    Server::builder()
-        .add_service(ProxyServer::new(greeter))
-        .serve(addr)
-        .await?;
+    let symbols: Vec<String> = vec!["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDC", "BCH_USDC"]
+        .iter()
+        .map(|sym| sym.to_string())
+        .collect();
 
-    Ok(())
+    let ws = PoloniexWs::new().await.unwrap();
+    ws.subscribe(vec!["trades".to_string()], symbols.clone())
+        .await;
+    ws.read_and_store();
+    ws.init_heartbeat();
+
+    for sym in symbols {
+        let payload = PoloniexRequest::Candles {
+            symbol: sym.clone(),
+            interval: PoloniexKLineIntervals::Week1,
+            start_time: kline_start_time,
+            end_time: kline_end_time,
+        };
+        let rest = PoloniexRest::new();
+        let historical_data = rest.request(payload).await.unwrap();
+
+        {
+            let locked_state = shared_state.lock().await;
+            locked_state.db.insert_price_data(sym, historical_data.data);
+        }
+    }
+
+    // loop to keep up the event loop
+    loop {}
 }
-
