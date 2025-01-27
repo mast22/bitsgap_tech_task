@@ -5,9 +5,12 @@ use tokio::{sync::Mutex, time::interval};
 use tokio_tungstenite::connect_async;
 use tungstenite::{error::Error, Message};
 
-use super::models::{PoloniexWsEvent, WebSocketMessage};
+use crate::SharedState;
+
+use super::models::{PoloniexWsEvent, Trade, WebSocketMessage};
 
 const POLONIEX_ENDPOINT: &str = "wss://ws.poloniex.com/ws/public";
+const TRADES_BUFFER_SIZE: usize = 100;
 pub type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -37,11 +40,14 @@ impl PoloniexWs {
         tracing::info!("Sent subscription for {:?} {:?}", channel, symbols);
     }
 
-    pub fn read_and_store(&self) {
+    pub fn read_and_store(&self, state: SharedState) {
         let stream = self.stream.clone();
 
         tokio::spawn(async move {
             let mut stream_lock = stream.lock().await;
+            let state = state.lock().await;
+
+            let mut trade_buffer: Vec<Trade> = Vec::new();
 
             while let Some(msg) = stream_lock.next().await {
                 match msg.expect("failed to read rt ws") {
@@ -53,9 +59,13 @@ impl PoloniexWs {
                         match ser_message {
                             PoloniexWsEvent::Trades {
                                 channel: _,
-                                data: _trades,
+                                data: trades,
                             } => {
-                                // tracing::info!("Received new trades {:?}", trades[0].id);
+                                trade_buffer.extend(trades);
+                                if trade_buffer.len() >= TRADES_BUFFER_SIZE {
+                                    state.db.insert_recent_trades(&trade_buffer);
+                                    trade_buffer.clear();
+                                }
                             }
                             PoloniexWsEvent::Confirmation {
                                 channel: _,

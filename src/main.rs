@@ -1,3 +1,4 @@
+pub mod aggregator;
 pub mod client;
 pub mod common;
 pub mod database;
@@ -15,6 +16,8 @@ pub struct State {
     db: Database,
 }
 
+type SharedState = Arc<Mutex<State>>;
+
 #[tokio::main]
 async fn main() {
     // simple logging
@@ -28,9 +31,10 @@ async fn main() {
     let state = State {
         db: Database::new(),
     };
-    let shared_state = Arc::new(Mutex::new(state));
+    let shared_state: SharedState = Arc::new(Mutex::new(state));
 
-    let symbols: Vec<String> = vec!["BTC_USDT", "TRX_USDT", "ETH_USDT", "DOGE_USDC", "BCH_USDC"]
+    // DOGE_USDC and BCH_USDC requests result in error. They are not available in Poloniex
+    let symbols: Vec<String> = vec!["BTC_USDT", "TRX_USDT", "ETH_USDT"]
         .iter()
         .map(|sym| sym.to_string())
         .collect();
@@ -38,7 +42,7 @@ async fn main() {
     let ws = PoloniexWs::new().await.unwrap();
     ws.subscribe(vec!["trades".to_string()], symbols.clone())
         .await;
-    ws.read_and_store();
+    ws.read_and_store(shared_state.clone());
     ws.init_heartbeat();
 
     for sym in symbols {
@@ -53,9 +57,10 @@ async fn main() {
 
         {
             let locked_state = shared_state.lock().await;
-            locked_state.db.insert_price_data(sym, historical_data.data);
+            locked_state.db.insert_candles(sym, historical_data.data);
         }
     }
+    tracing::info!("Finished downloading KLines");
 
     // loop to keep up the event loop
     loop {}
